@@ -1,295 +1,201 @@
-I can help you set up the basic structure of the Real-Time Event Management System, including the backend, frontend, and database connections. Below, I'll outline the key files and code snippets for each part of the system. You'll need to implement your own Dockerfile and Docker Compose later to practice your DevOps skills.
+The code I provided earlier includes a basic user registration route, but it does not fully implement a user sign-in and login feature. To add user authentication, including sign-in and login, we need to expand the application with the following components:
 
-### **1. Backend (API) - Python/Flask**
+1. **User Registration**: A route to register new users.
+2. **User Login**: A route to allow existing users to log in.
+3. **Password Hashing**: Securely storing user passwords using hashing.
+4. **Session Management**: Managing user sessions to keep them logged in across requests.
+5. **Protected Routes**: Routes that require users to be authenticated.
 
-#### **Directory Structure:**
+I'll add these features to the existing application below.
 
-```
-backend/
-│
-├── app/
-│   ├── __init__.py
-│   ├── models.py
-│   ├── routes.py
-│   └── config.py
-│
-├── run.py
-└── requirements.txt
-```
+### **1. `models.py` (User Model Update)**
+```python
+from flask_sqlalchemy import SQLAlchemy
+from werkzeug.security import generate_password_hash, check_password_hash
 
-#### **Files:**
+db = SQLAlchemy()
 
-- **`requirements.txt`:**
-  ```plaintext
-  Flask==2.3.2
-  Flask-SQLAlchemy==3.1.0
-  Flask-SocketIO==5.3.3
-  psycopg2-binary==2.9.7
-  ```
-  
-- **`app/__init__.py`:**
-  ```python
-  from flask import Flask
-  from flask_sqlalchemy import SQLAlchemy
-  from flask_socketio import SocketIO
+class User(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    email = db.Column(db.String(120), unique=True, nullable=False)
+    password = db.Column(db.String(128), nullable=False)
 
-  app = Flask(__name__)
-  app.config.from_object('app.config.Config')
+class Event(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(100), nullable=False)
+    description = db.Column(db.String(500))
+    date = db.Column(db.DateTime, nullable=False)
 
-  db = SQLAlchemy(app)
-  socketio = SocketIO(app)
-
-  from app import routes, models
-
-  if __name__ == "__main__":
-      socketio.run(app)
-  ```
-
-- **`app/config.py`:**
-  ```python
-  import os
-
-  class Config:
-      SQLALCHEMY_DATABASE_URI = os.getenv('DATABASE_URI', 'postgresql://user:password@localhost/eventdb')
-      SQLALCHEMY_TRACK_MODIFICATIONS = False
-      SECRET_KEY = os.getenv('SECRET_KEY', 'your_secret_key')
-  ```
-
-- **`app/models.py`:**
-  ```python
-  from app import db
-
-  class Event(db.Model):
-      id = db.Column(db.Integer, primary_key=True)
-      name = db.Column(db.String(100), nullable=False)
-      description = db.Column(db.String(200))
-      date = db.Column(db.DateTime, nullable=False)
-
-  class RSVP(db.Model):
-      id = db.Column(db.Integer, primary_key=True)
-      event_id = db.Column(db.Integer, db.ForeignKey('event.id'), nullable=False)
-      user_name = db.Column(db.String(100), nullable=False)
-      response = db.Column(db.String(10), nullable=False)
-  ```
-
-- **`app/routes.py`:**
-  ```python
-  from flask import request, jsonify
-  from app import app, db, socketio
-  from app.models import Event, RSVP
-  from flask_socketio import emit
-
-  @app.route('/events', methods=['GET'])
-  def get_events():
-      events = Event.query.all()
-      return jsonify([e.name for e in events])
-
-  @app.route('/rsvp', methods=['POST'])
-  def rsvp():
-      data = request.json
-      new_rsvp = RSVP(event_id=data['event_id'], user_name=data['user_name'], response=data['response'])
-      db.session.add(new_rsvp)
-      db.session.commit()
-      socketio.emit('rsvp_update', {'event_id': data['event_id'], 'user_name': data['user_name'], 'response': data['response']})
-      return jsonify({'message': 'RSVP recorded'}), 201
-  ```
-
-- **`run.py`:**
-  ```python
-  from app import app
-
-  if __name__ == "__main__":
-      app.run(debug=True, host='0.0.0.0')
-  ```
-
-### **2. Frontend - React.js**
-
-#### **Directory Structure:**
-
-```
-frontend/
-│
-├── public/
-├── src/
-│   ├── components/
-│   │   ├── EventList.js
-│   │   ├── RSVPForm.js
-│   │   └── Chat.js
-│   ├── App.js
-│   └── index.js
-│
-└── package.json
+class RSVP(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    event_id = db.Column(db.Integer, db.ForeignKey('event.id'), nullable=False)
+    user_name = db.Column(db.String(100), nullable=False)
+    email = db.Column(db.String(120), nullable=False)  
+    response = db.Column(db.String(10), nullable=False)
+    event = db.relationship('Event', backref=db.backref('rsvps', lazy=True))
 ```
 
-#### **Files:**
+### **2. `routes.py` (User Authentication)**
+```python
+from flask import Flask, request, jsonify, session
+from flask_mail import Mail, Message
+from flask_socketio import SocketIO
+from flask_sqlalchemy import SQLAlchemy
+from werkzeug.security import generate_password_hash, check_password_hash
+from models import db, User, Event, RSVP
 
-- **`package.json`:**
-  ```json
-  {
-    "name": "frontend",
-    "version": "1.0.0",
-    "dependencies": {
-      "react": "^18.0.0",
-      "react-dom": "^18.0.0",
-      "axios": "^1.3.3",
-      "socket.io-client": "^4.7.1"
-    },
-    "scripts": {
-      "start": "react-scripts start",
-      "build": "react-scripts build"
-    }
-  }
-  ```
+app = Flask(__name__)
+app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///events.db'
+app.config['SECRET_KEY'] = 'your-secret-key'  # For session management
+app.config['MAIL_SERVER'] = 'smtp.gmail.com'
+app.config['MAIL_PORT'] = 587
+app.config['MAIL_USE_TLS'] = True
+app.config['MAIL_USERNAME'] = 'your-email@gmail.com'
+app.config['MAIL_PASSWORD'] = 'your-email-password'
 
-- **`src/App.js`:**
-  ```javascript
-  import React from 'react';
-  import EventList from './components/EventList';
-  import RSVPForm from './components/RSVPForm';
-  import Chat from './components/Chat';
+db.init_app(app)
+mail = Mail(app)
+socketio = SocketIO(app)
 
-  function App() {
-    return (
-      <div className="App">
-        <EventList />
-        <RSVPForm />
-        <Chat />
-      </div>
-    );
-  }
+# User Registration Route
+@app.route('/register', methods=['POST'])
+def register():
+    data = request.json
+    hashed_password = generate_password_hash(data['password'], method='sha256')
+    new_user = User(email=data['email'], password=hashed_password)
+    db.session.add(new_user)
+    db.session.commit()
+    return jsonify({'message': 'User registered successfully'}), 201
 
-  export default App;
-  ```
+# User Login Route
+@app.route('/login', methods=['POST'])
+def login():
+    data = request.json
+    user = User.query.filter_by(email=data['email']).first()
+    if not user or not check_password_hash(user.password, data['password']):
+        return jsonify({'message': 'Login failed! Check your credentials and try again.'}), 401
+    
+    session['user_id'] = user.id
+    return jsonify({'message': 'Login successful!'}), 200
 
-- **`src/components/EventList.js`:**
-  ```javascript
-  import React, { useEffect, useState } from 'react';
-  import axios from 'axios';
+# Protected Route Example
+@app.route('/protected', methods=['GET'])
+def protected():
+    if 'user_id' not in session:
+        return jsonify({'message': 'You are not logged in!'}), 401
 
-  function EventList() {
-    const [events, setEvents] = useState([]);
+    return jsonify({'message': f'Welcome User {session["user_id"]}!'}), 200
 
-    useEffect(() => {
-      axios.get('/events')
-        .then(response => setEvents(response.data))
-        .catch(error => console.log(error));
-    }, []);
+@app.route('/logout', methods=['POST'])
+def logout():
+    session.pop('user_id', None)
+    return jsonify({'message': 'You have logged out successfully!'}), 200
 
-    return (
-      <ul>
-        {events.map(event => <li key={event}>{event}</li>)}
-      </ul>
-    );
-  }
+# RSVP Route with User Session
+@app.route('/rsvp', methods=['POST'])
+def rsvp():
+    if 'user_id' not in session:
+        return jsonify({'message': 'You must be logged in to RSVP!'}), 401
 
-  export default EventList;
-  ```
+    data = request.json
+    new_rsvp = RSVP(event_id=data['event_id'], user_name=data['user_name'], email=data['email'], response=data['response'])
+    db.session.add(new_rsvp)
+    db.session.commit()
 
-- **`src/components/RSVPForm.js`:**
-  ```javascript
-  import React, { useState } from 'react';
-  import axios from 'axios';
+    # Send email notification
+    send_rsvp_notification(data['event_id'], data['user_name'], data['email'], data['response'])
 
-  function RSVPForm() {
-    const [formData, setFormData] = useState({ event_id: '', user_name: '', response: '' });
+    socketio.emit('rsvp_update', {'event_id': data['event_id'], 'user_name': data['user_name'], 'response': data['response']})
+    return jsonify({'message': 'RSVP recorded'}), 201
 
-    const handleChange = e => {
-      setFormData({ ...formData, [e.target.name]: e.target.value });
-    };
+def send_rsvp_notification(event_id, user_name, email, response):
+    msg = Message(f"RSVP Update for Event {event_id}", sender="your-email@gmail.com", recipients=[email])
+    msg.body = f"Hello {user_name},\n\nYou have successfully RSVP'd with '{response}' for Event ID: {event_id}.\n\nThank you!"
+    mail.send(msg)
 
-    const handleSubmit = e => {
-      e.preventDefault();
-      axios.post('/rsvp', formData)
-        .then(response => console.log(response.data))
-        .catch(error => console.log(error));
-    };
+if __name__ == '__main__':
+    with app.app_context():
+        db.create_all()
+    socketio.run(app, debug=True)
+```
 
-    return (
-      <form onSubmit={handleSubmit}>
-        <input type="text" name="event_id" placeholder="Event ID" onChange={handleChange} />
-        <input type="text" name="user_name" placeholder="Your Name" onChange={handleChange} />
-        <select name="response" onChange={handleChange}>
-          <option value="">Response</option>
-          <option value="yes">Yes</option>
-          <option value="no">No</option>
-        </select>
-        <button type="submit">RSVP</button>
-      </form>
-    );
-  }
+### **3. Frontend (`login_form.js`)**
+```javascript
+import React, { useState } from 'react';
+import axios from 'axios';
 
-  export default RSVPForm;
-  ```
+function LoginForm() {
+  const [formData, setFormData] = useState({ email: '', password: '' });
 
-- **`src/components/Chat.js`:**
-  ```javascript
-  import React, { useEffect, useState } from 'react';
-  import io from 'socket.io-client';
+  const handleChange = e => {
+    setFormData({ ...formData, [e.target.name]: e.target.value });
+  };
 
-  function Chat() {
-    const [messages, setMessages] = useState([]);
-    const [message, setMessage] = useState('');
-    const socket = io();
+  const handleSubmit = e => {
+    e.preventDefault();
+    axios.post('/login', formData)
+      .then(response => console.log(response.data))
+      .catch(error => console.log(error));
+  };
 
-    useEffect(() => {
-      socket.on('rsvp_update', msg => setMessages([...messages, msg]));
-    }, [messages]);
-
-    const handleSubmit = e => {
-      e.preventDefault();
-      socket.emit('rsvp_update', { message });
-      setMessage('');
-    };
-
-    return (
-      <div>
-        <ul>
-          {messages.map((msg, index) => <li key={index}>{msg.user_name}: {msg.response}</li>)}
-        </ul>
-        <form onSubmit={handleSubmit}>
-          <input type="text" value={message} onChange={e => setMessage(e.target.value)} />
-          <button type="submit">Send</button>
-        </form>
-      </div>
-    );
-  }
-
-  export default Chat;
-  ```
-
-### **3. Database**
-
-#### **PostgreSQL Setup (SQL Script)**
-
-- **`init.sql`:**
-  ```sql
-  CREATE DATABASE eventdb;
-
-  \c eventdb;
-
-  CREATE TABLE event (
-      id SERIAL PRIMARY KEY,
-      name VARCHAR(100) NOT NULL,
-      description VARCHAR(200),
-      date TIMESTAMP NOT NULL
+  return (
+    <form onSubmit={handleSubmit}>
+      <input type="email" name="email" placeholder="Email" onChange={handleChange} required />
+      <input type="password" name="password" placeholder="Password" onChange={handleChange} required />
+      <button type="submit">Login</button>
+    </form>
   );
+}
 
-  CREATE TABLE rsvp (
-      id SERIAL PRIMARY KEY,
-      event_id INTEGER REFERENCES event(id),
-      user_name VARCHAR(100) NOT NULL,
-      response VARCHAR(10) NOT NULL
+export default LoginForm;
+```
+
+### **4. Frontend (`register_form.js`)**
+```javascript
+import React, { useState } from 'react';
+import axios from 'axios';
+
+function RegisterForm() {
+  const [formData, setFormData] = useState({ email: '', password: '' });
+
+  const handleChange = e => {
+    setFormData({ ...formData, [e.target.name]: e.target.value });
+  };
+
+  const handleSubmit = e => {
+    e.preventDefault();
+    axios.post('/register', formData)
+      .then(response => console.log(response.data))
+      .catch(error => console.log(error));
+  };
+
+  return (
+    <form onSubmit={handleSubmit}>
+      <input type="email" name="email" placeholder="Email" onChange={handleChange} required />
+      <input type="password" name="password" placeholder="Password" onChange={handleChange} required />
+      <button type="submit">Register</button>
+    </form>
   );
-  ```
+}
 
-### **Next Steps (Your DevOps Learning)**
+export default RegisterForm;
+```
 
-Now that you have the base application set up, you can practice your DevOps skills by:
+### **5. `requirements.txt`**
+```text
+Flask==2.1.2
+Flask-SQLAlchemy==2.5.1
+Flask-SocketIO==5.2.0
+Flask-Mail==0.9.1
+Flask-Bcrypt==0.7.1
+Flask-Session==0.4.0  # Add this for session management
+eventlet==0.33.0
+```
 
-1. **Creating Dockerfiles** for the backend, frontend, and database.
-2. **Writing Docker Compose files** to orchestrate the multi-container environment.
-3. **Setting up CI/CD pipelines** using Jenkins, GitHub Actions, or another tool of your choice.
-4. **Deploying the application** to a cloud provider like AWS, Azure, or GCP using Kubernetes.
-5. **Monitoring the application** using Prometheus, Grafana, and other observability tools.
+### **Summary of Features Added:**
+1. **User Registration**: Users can create accounts with an email and password.
+2. **User Login**: Users can log in to their accounts.
+3. **Session Management**: Users stay logged in across requests, enabling access to protected routes.
+4. **Protected Routes**: Certain routes (like RSVP) require users to be logged in.
 
-This approach will give you practical experience in setting up and deploying a full-stack application in a modern DevOps environment.
+With these additions, your Real-Time Event Management System now supports full user authentication, allowing users to register, log in, and securely RSVP to events.
